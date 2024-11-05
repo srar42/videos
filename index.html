@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App de Videollamadas</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+
+        body {
+            background-color: #f0f2f5;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .video-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .video-player {
+            width: 100%;
+            background-color: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .call-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .code-display {
+            background: #e8f0fe;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: none;
+        }
+
+        .code-display.active {
+            display: block;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            background-color: #1a73e8;
+            color: white;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button.end-call {
+            background-color: #dc3545;
+        }
+
+        input {
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            flex-grow: 1;
+            max-width: 300px;
+        }
+
+        .copy-button {
+            background-color: #34a853;
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+
+        .status-message {
+            color: #1a73e8;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        @media (max-width: 768px) {
+            .video-container {
+                grid-template-columns: 1fr;
+            }
+
+            .call-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            input {
+                max-width: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="video-container">
+            <div class="video-player">
+                <video id="localVideo" autoplay playsinline muted></video>
+            </div>
+            <div class="video-player">
+                <video id="remoteVideo" autoplay playsinline></video>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="call-controls">
+                <button id="startButton">Iniciar nueva videollamada</button>
+                <input type="text" id="joinCode" placeholder="Ingresa código para unirte">
+                <button id="joinButton">Unirse a llamada</button>
+                <button id="endButton" class="end-call hidden">Finalizar llamada</button>
+            </div>
+
+            <div id="codeDisplay" class="code-display">
+                <h3>Código de la llamada:</h3>
+                <p id="callCode"></p>
+                <button id="copyButton" class="copy-button">Copiar código</button>
+                <p class="status-message">Comparte este código con quien quieras que se una a la llamada</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
+
+        // Configuración de Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyAxaQDNjgXOmWJfI3mIzbhQKh2W2CawDWQ",
+            authDomain: "videochat-ae958.firebaseapp.com",
+            projectId: "videochat-ae958",
+            storageBucket: "videochat-ae958.firebasestorage.app",
+            messagingSenderId: "875970331606",
+            appId: "1:875970331606:web:6878b7de0b5e89a35bda77",
+            measurementId: "G-JHNZXKVZ8Z"
+          };
+
+        // Inicializar Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Variables globales
+        let localStream;
+        let peerConnection;
+        let currentCallId;
+
+        // Elementos del DOM
+        const startButton = document.getElementById('startButton');
+        const joinButton = document.getElementById('joinButton');
+        const endButton = document.getElementById('endButton');
+        const joinCode = document.getElementById('joinCode');
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const codeDisplay = document.getElementById('codeDisplay');
+        const callCode = document.getElementById('callCode');
+        const copyButton = document.getElementById('copyButton');
+
+        // Configuración de STUN servers
+        const servers = {
+            iceServers: [
+                {
+                    urls: [
+                        'stun:stun1.l.google.com:19302',
+                        'stun:stun2.l.google.com:19302'
+                    ]
+                }
+            ]
+        };
+
+        // Event Listeners
+        startButton.addEventListener('click', startCall);
+        joinButton.addEventListener('click', joinCall);
+        endButton.addEventListener('click', endCall);
+        copyButton.addEventListener('click', copyCallCode);
+
+        // Inicializar cámara y micrófono
+        async function initializeMedia() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+                localVideo.srcObject = localStream;
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                alert('Error al acceder a la cámara y micrófono');
+            }
+        }
+
+        // Generar código aleatorio para la llamada
+        function generateCallCode() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        // Iniciar nueva llamada
+        async function startCall() {
+            await initializeMedia();
+            currentCallId = generateCallCode();
+
+            try {
+                // Crear conexión peer
+                peerConnection = new RTCPeerConnection(servers);
+
+                // Agregar tracks
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Manejar ICE candidates
+                peerConnection.onicecandidate = async (event) => {
+                    if (event.candidate) {
+                        await updateDoc(doc(db, 'calls', currentCallId), {
+                            candidates: [...(await getCandidates()), event.candidate.toJSON()]
+                        });
+                    }
+                };
+
+                // Manejar stream remoto
+                peerConnection.ontrack = (event) => {
+                    remoteVideo.srcObject = event.streams[0];
+                };
+
+                // Crear oferta
+                const offerDescription = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offerDescription);
+
+                await setDoc(doc(db, 'calls', currentCallId), {
+                    offer: {
+                        type: offerDescription.type,
+                        sdp: offerDescription.sdp
+                    },
+                    candidates: []
+                });
+
+                // Mostrar código
+                callCode.textContent = currentCallId;
+                codeDisplay.classList.add('active');
+                startButton.classList.add('hidden');
+                endButton.classList.remove('hidden');
+
+                // Escuchar respuesta
+                onSnapshot(doc(db, 'calls', currentCallId), (snapshot) => {
+                    const data = snapshot.data();
+                    if (!peerConnection.currentRemoteDescription && data?.answer) {
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error starting call:', error);
+                alert('Error al iniciar la llamada');
+            }
+        }
+
+        // Unirse a una llamada
+        async function joinCall() {
+            currentCallId = joinCode.value;
+            await initializeMedia();
+
+            // Obtener la oferta
+            const callDoc = await getDoc(doc(db, 'calls', currentCallId));
+            const data = callDoc.data();
+            if (data) {
+                peerConnection = new RTCPeerConnection(servers);
+
+                // Agregar tracks
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Manejar ICE candidates
+                peerConnection.onicecandidate = async (event) => {
+                    if (event.candidate) {
+                        await updateDoc(doc(db, 'calls', currentCallId), {
+                            candidates: [...(await getCandidates()), event.candidate.toJSON()]
+                        });
+                    }
+                };
+
+                // Manejar stream remoto
+                peerConnection.ontrack = (event) => {
+                    remoteVideo.srcObject = event.streams[0];
+                };
+
+                // Establecer descripción remota
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+                // Crear respuesta
+                const answerDescription = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answerDescription);
+
+                await updateDoc(doc(db, 'calls', currentCallId), {
+                    answer: {
+                        type: answerDescription.type,
+                        sdp: answerDescription.sdp
+                    }
+                });
+
+                // Escuchar ICE candidates
+                onSnapshot(doc(db, 'calls', currentCallId), async (snapshot) => {
+                    const candidates = snapshot.data()?.candidates || [];
+                    for (const candidate of candidates) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    }
+                });
+
+                // Mostrar el botón de finalizar llamada
+                endButton.classList.remove('hidden');
+                startButton.classList.add('hidden');
+                codeDisplay.classList.remove('active');
+
+            } else {
+                alert('Llamada no encontrada, verifica el código');
+            }
+        }
+
+        // Finalizar llamada
+        async function endCall() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (currentCallId) {
+                await deleteDoc(doc(db, 'calls', currentCallId));
+                currentCallId = null;
+            }
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+            startButton.classList.remove('hidden');
+            endButton.classList.add('hidden');
+            codeDisplay.classList.remove('active');
+        }
+
+        // Copiar código
+        function copyCallCode() {
+            navigator.clipboard.writeText(callCode.textContent).then(() => {
+                alert('Código copiado al portapapeles');
+            });
+        }
+
+        // Obtener candidatos
+        async function getCandidates() {
+            const callDoc = await getDoc(doc(db, 'calls', currentCallId));
+            return callDoc.data()?.candidates || [];
+        }
+    </script>
+</body>
+</html>
